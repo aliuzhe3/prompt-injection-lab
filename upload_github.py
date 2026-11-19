@@ -96,24 +96,52 @@ def push(repo: Repo, remote_url: str, token: str):
 
 def main():
     parser = argparse.ArgumentParser(description="一键上传项目到 GitHub（无需安装 Git）")
-    parser.add_argument("--repo", required=True, help="GitHub 仓库地址，如 https://github.com/用户名/仓库名.git")
+    parser.add_argument("--repo", default="", help="GitHub 仓库地址，如 https://github.com/用户名/仓库名.git")
     parser.add_argument("--token", default=os.getenv("GITHUB_TOKEN", ""),
                         help="GitHub Personal Access Token（也可用环境变量 GITHUB_TOKEN）")
     parser.add_argument("--name", default="Liu", help="提交者姓名")
     parser.add_argument("--email", default="liu@example.com", help="提交者邮箱")
     parser.add_argument("--message", default="feat: LLM 提示注入攻防实验平台", help="提交信息")
+    parser.add_argument("--interactive", action="store_true", help="交互式输入仓库地址与 Token（供 bat 双击使用）")
     args = parser.parse_args()
 
-    if not args.token:
-        print("❌ 缺少 Token：请用 --token 传入，或先设置环境变量 GITHUB_TOKEN")
+    repo_url = (args.repo or "").strip().strip('"').strip("'")
+    token = (args.token or "").strip().strip('"').strip("'")
+
+    # 交互模式：缺什么就问什么，输错/空值会重新提示，不会一闪而过
+    if args.interactive:
+        if not repo_url:
+            print("提示：示例格式  https://github.com/你的用户名/仓库名.git")
+            repo_url = input("请输入 GitHub 仓库地址：").strip().strip('"').strip("'")
+        if not token:
+            print("提示：Token 形如 ghp_xxxxxxxx，粘贴后按回车（窗口内点鼠标右键即粘贴）")
+            token = input("请输入 GitHub Token：").strip().strip('"').strip("'")
+
+    if not repo_url:
+        print("❌ 缺少仓库地址：请用 --repo 传入，或双击 bat 交互输入")
         sys.exit(1)
+    while not token:
+        print("❌ Token 不能为空，请重新输入：")
+        token = input("请输入 GitHub Token：").strip().strip('"').strip("'")
+
+    print(f"仓库：{repo_url}")
+    print(f"Token：{token[:4]}****{token[-4:]}（已隐藏中间部分）")
 
     project_dir = os.path.dirname(os.path.abspath(__file__))
     author = f"{args.name} <{args.email}>"
 
     repo = ensure_repo(project_dir)
     stage_and_commit(repo, args.message, author)
-    push(repo, args.repo.rstrip("/"), args.token)
+    try:
+        push(repo, repo_url.rstrip("/"), token)
+    except Exception as e:
+        print(f"\n❌ 推送失败：{type(e).__name__}: {e}")
+        print("常见原因：")
+        print("  1) Token 无效或已过期（重新生成，勾选 repo 权限）")
+        print("  2) 仓库地址写错，或仓库不存在 / 不是空仓库")
+        print("  3) 网络无法访问 github.com（可尝试开启代理）")
+        print("  4) Token 没有该仓库的写权限")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
