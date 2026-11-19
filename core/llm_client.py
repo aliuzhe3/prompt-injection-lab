@@ -13,6 +13,7 @@ LLM 调用封装（OpenAI SDK 兼容）+ 离线模拟模型
 import base64
 import re
 import threading
+import time
 
 import config
 from core.attacks import get_payload_by_text
@@ -66,22 +67,43 @@ def chat(messages: list, use_mock: bool = False) -> str:
                 timeout=config.LLM_TIMEOUT,
             )
     try:
-        resp = _client.chat.completions.create(
-            model=_model,
-            messages=messages,
-            temperature=config.LLM_TEMPERATURE,
-            max_tokens=config.LLM_MAX_TOKENS,
-        )
-        return (resp.choices[0].message.content or "").strip()
+        return _create_with_retry(messages)
     except Exception as e:  # 统一转成带排查建议的友好错误
         raise RuntimeError(
             f"调用真实模型失败：{type(e).__name__}: {e}\n"
             f"请检查（当前 base_url={_base_url}, model={_model}）：\n"
-            "  1) 本地 Ollama 是否已启动并拉取模型：ollama pull qwen2.5:7b\n"
+            f"  1) 本地 Ollama 是否已启动并拉取模型：ollama pull {_model}\n"
             "  2) config.py / 界面「模型连接设置」中的地址和模型名是否正确\n"
             "  3) 云端 API 的密钥是否有效、余额是否充足\n"
             "  4) 也可以先把「模型后端」切换为「离线模拟」体验完整流程"
         ) from e
+
+
+# 本地 Ollama 首次加载模型（或系统内存紧张）时，偶发返回 502 / 连接失败；
+# 这类错误重试通常即可恢复，不应让整批 30 条评测直接中断。
+_RETRYABLE_ERRORS = ("InternalServerError", "APIConnectionError", "APITimeoutError", "RateLimitError")
+_MAX_RETRIES = 2  # 最多重试 2 次（共 3 次尝试）
+
+
+def _create_with_retry(messages: list) -> str:
+    """带重试的模型调用：仅对瞬时性错误重试，其余错误立即抛出。"""
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = _client.chat.completions.create(
+                model=_model,
+                messages=messages,
+                temperature=config.LLM_TEMPERATURE,
+                max_tokens=config.LLM_MAX_TOKENS,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            name = type(e).__name__
+            if attempt < _MAX_RETRIES and any(k in name for k in _RETRYABLE_ERRORS):
+                wait = 3 * (attempt + 1)
+                print(f"  ⚠️ {name}（第 {attempt + 1} 次失败），{wait} 秒后重试 ……")
+                time.sleep(wait)
+                continue
+            raise
 
 
 # =========================================================================
